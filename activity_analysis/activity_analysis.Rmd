@@ -1,0 +1,282 @@
+---
+title: "activity_analysis"
+author: "GabiK"
+date: "5/20/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyverse)
+library(glue)
+library(scales)
+library(ggpubr)
+library(lme4)
+library(DHARMa)
+source("https://gist.githubusercontent.com/benmarwick/2a1bb0133ff568cbe28d/raw/fb53bd97121f7f9ce947837ef1a4c65a73bffb3f/geom_flat_violin.R")
+
+#N.B. after installing new packages, re-start R before running the script
+```
+# LIGHT BARRIER-BASED ACTIVITY
+# Data preparation
+```{r}
+# activity files with weather data
+frd=read.csv("data/Friedland_activity_LB.csv")
+dem=read.csv("data/Demmin_activity_LB.csv")
+pen=read.csv("data/Peenemuende_activity_LB.csv")
+ank=read.csv("data/Anklam_activity_LB.csv")
+
+merged=rbind(ank,dem,frd,pen)
+merged$monthday=substr(merged$pseudodate, start=6, stop=10)
+merged= merged %>% filter(!is.na(passes)) #remove days with NA passes
+```
+# Figure 1A in the manuscript
+```{r}
+# data for plotting
+merged2=merged %>%
+  group_by(site, Flash) %>%
+  add_count(name="samplesize") %>%
+  mutate(Flash=fct_recode(Flash,"flash-off" = "off", "flash-on"="on")) %>% 
+  mutate(samplesize = glue("{ Flash } \n (N={ samplesize })"))
+# activity on flash-on vs flash-off nights, faceted by site
+flash_activity=ggplot(data = merged2, 
+       aes(y = passes, x = samplesize , fill = Flash)) +
+  geom_flat_violin(position = position_nudge(x = 0.25, y = 0), alpha = .8) +
+  geom_point(aes(y = passes, color =Flash), 
+             position = position_jitter(width = .15), size = .5, alpha = 0.8) +
+  geom_boxplot(width = .3, outlier.shape = NA, alpha = 0.5) +
+  expand_limits(x = 1) +
+  facet_wrap(~site, scales="free")+
+  coord_flip()+
+  labs(x="",
+       y="bat activity / night")+
+  scale_color_manual(values=c("#4A6FE3", "#D33F6A"))+
+  scale_fill_manual(values=c("#4A6FE3", "#D33F6A"))+
+  scale_x_discrete(expand=c(0,0.25))+
+  #scale_y_continuous(breaks = c(seq(0,300, by=50)))+
+  theme_bw() +
+  theme(legend.position = "none", axis.text.y = element_text(hjust=0.5))
+flash_activity
+```
+# Figure 1B in the manuscript
+```{r}
+# activity and proportion of night hours with rain, faceted by site
+rain_activity=merged %>% 
+  filter(Flash!="NA") %>% 
+  ggplot(aes(x=precProp,y=passes))+
+  geom_point(aes(col=Flash))+
+  scale_color_manual(values = c("#4A6FE3", "#D33F6A"))+
+  geom_smooth(method="lm", data=merged[merged$Flash=="on",], col="#D33F6A", fill="#D33F6A", alpha=0.2)+
+  geom_smooth(method="lm", data=merged[merged$Flash=="off",], col="#4A6FE3", fill="#4A6FE3", alpha=0.2)+
+  labs(y="bat activity / night",
+       x="proportion of hours with rain / night")+
+  facet_wrap(~Site, scales="free")+
+  theme_bw()+
+  scale_x_continuous(labels = label_percent())+
+  theme(legend.position = c(0.96, 0.9),
+        legend.background = element_rect(fill = "#ffffffaa", colour = "black"),
+        legend.key.size = unit(0.2,"line"),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size=8))
+rain_activity
+```
+# Figure 1C in the manuscript
+```{r}
+# activity and temperature at sunset, faceted by Site
+temperature_activity=merged %>% 
+  ggplot(aes(x=sunset_temp,y=passes))+
+  geom_point(aes(col=Flash))+
+  scale_color_manual(values = c("#4A6FE3", "#D33F6A"))+
+  geom_smooth(method="lm", data=merged[merged$Flash=="on",], col="#D33F6A", fill="#D33F6A", alpha=0.2)+
+  geom_smooth(method="lm", data=merged[merged$Flash=="off",],col="#4A6FE3", fill="#4A6FE3", alpha=0.2)+
+  labs(y="bat activity / night",
+       x="temperature at sunset (°C)")+
+  facet_wrap(~Site, scales="free")+
+  theme_bw()+
+  theme(legend.position = c(0.96, 0.9),
+        legend.background = element_rect(fill = "#ffffffaa", colour = "black"),
+        legend.key.size = unit(0.2,"line"),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size=8))
+temperature_activity
+```
+# save plot
+```{r}
+plots=ggarrange(flash_activity, rain_activity,
+          temperature_activity, nrow=3, ncol=1,
+          labels=c("A","B","C"))
+plots
+# save high resolution TIFF file
+ggplot2::ggsave(plots,file = "flash_weather_activity_raw.tiff",
+                device='tiff', dpi=800,  width = 210, 
+                height = 297,  units = "mm")
+```
+# Modelling light barrier-based bat activity
+```{r}
+#rescale continuous variables
+merged$precProp_stand=scale(merged$precProp, center = F)
+merged$sunset_temp_stand=scale(merged$sunset_temp, center = F)
+
+#calculate correlation coefficients
+merged %>% dplyr::select(Week, precProp_stand, sunset_temp_stand) %>% cor()
+
+merged$Week=as.factor(merged$Week)
+
+#final model
+model=glmer.nb(passes ~ precProp_stand + sunset_temp_stand + Flash + (1|Site),data=merged) 
+#model output              
+summary(model)
+```
+
+```{r}
+#calculate odds ratio with confidence interval
+cc=confint(model,parm="beta_")  
+ctab=cbind(est=fixef(model),cc)
+ctab=as.data.frame(ctab)
+ctab=setNames(cbind(rownames(ctab), ctab, row.names = NULL), 
+              c("variable","odds ratio","lcl","ucl"))
+ctab$variable=c("intercept", "proportion of \n rainy night hours \n (standardized)","air temperature \n at sunset \n (standardized)", "flash on")
+ctab[,2:4] <- exp(ctab[,2:4])
+ctab
+```
+# Model validation
+```{r}
+set.seed(42)
+testUniformity(model) #tests if the overall distribution conforms to expectations
+testDispersion(model) # tests if the simulated dispersion is equal to the observed dispersion
+testQuantiles(model) #fits a quantile regression
+```
+
+# VIDEO-BASED ACTIVITY
+# Data preparation
+```{r}
+# activity files with weather data
+frd=read.csv("data/Friedland_activity_video.csv")
+dem=read.csv("data/Demmin_activity_video.csv")
+pen=read.csv("data/Peenemuende_activity_video.csv")
+ank=read.csv("data/Anklam_activity_video.csv")
+
+merged=rbind(ank,dem,frd,pen)
+merged$monthday=substr(merged$pseudodate, start=6, stop=10)
+merged= merged %>% filter(!is.na(passes)) #remove days with NA passes
+```
+# Figure S3A in the manuscript
+```{r}
+# data for plotting
+merged2=merged %>%
+  group_by(site, Flash) %>%
+  add_count(name="samplesize") %>%
+  mutate(Flash=fct_recode(Flash,"flash-off" = "off", "flash-on"="on")) %>% 
+  mutate(samplesize = glue("{ Flash } \n (N={ samplesize })"))
+# activity on flash-on vs flash-off nights, faceted by site
+flash_activity=ggplot(data = merged2, 
+       aes(y = passes, x = samplesize , fill = Flash)) +
+  geom_flat_violin(position = position_nudge(x = 0.25, y = 0), alpha = .8) +
+  geom_point(aes(y = passes, color =Flash), 
+             position = position_jitter(width = .15), size = .5, alpha = 0.8) +
+  geom_boxplot(width = .3, outlier.shape = NA, alpha = 0.5) +
+  expand_limits(x = 1) +
+  facet_wrap(~site, scales="free")+
+  coord_flip()+
+  labs(x="",
+       y="bat activity / night")+
+  scale_color_manual(values=c("#4A6FE3", "#D33F6A"))+
+  scale_fill_manual(values=c("#4A6FE3", "#D33F6A"))+
+  scale_x_discrete(expand=c(0,0.25))+
+  theme_bw() +
+  theme(legend.position = "none", axis.text.y = element_text(hjust=0.5))
+flash_activity
+```
+# Figure S3B in the manuscript
+```{r}
+# activity and proportion of night hours with rain, faceted by site
+rain_activity=merged %>% 
+  filter(Flash!="NA") %>% 
+  ggplot(aes(x=precProp,y=passes))+
+  geom_point(aes(col=Flash))+
+  scale_color_manual(values = c("#4A6FE3", "#D33F6A"))+
+  geom_smooth(method="lm", data=merged[merged$Flash=="on",], col="#D33F6A", fill="#D33F6A", alpha=0.2)+
+  geom_smooth(method="lm", data=merged[merged$Flash=="off",], col="#4A6FE3", fill="#4A6FE3", alpha=0.2)+
+  labs(y="bat activity / night",
+       x="proportion of hours with rain/ night")+
+  facet_wrap(~Site, scales="free")+
+  theme_bw()+
+  scale_x_continuous(labels = label_percent())+
+  theme(legend.position = c(0.96, 0.9),
+        legend.background = element_rect(fill = "#ffffffaa", colour = "black"),
+        legend.key.size = unit(0.2,"line"),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size=8))
+rain_activity
+```
+# Figure S3C in the manuscript
+```{r}
+# activity and temperature at sunset, faceted by Site
+temperature_activity=merged %>% 
+  ggplot(aes(x=sunset_temp,y=passes))+
+  geom_point(aes(col=Flash))+
+  scale_color_manual(values = c("#4A6FE3", "#D33F6A"))+
+  geom_smooth(method="lm", data=merged[merged$Flash=="on",], col="#D33F6A", fill="#D33F6A", alpha=0.2)+
+  geom_smooth(method="lm", data=merged[merged$Flash=="off",],col="#4A6FE3", fill="#4A6FE3", alpha=0.2)+
+  labs(y="bat activity / night",
+       x="temperature at sunset (°C)")+
+  facet_wrap(~Site, scales="free")+
+  theme_bw()+
+  theme(legend.position = c(0.96, 0.9),
+        legend.background = element_rect(fill = "#ffffffaa", colour = "black"),
+        legend.key.size = unit(0.2,"line"),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size=8))
+temperature_activity
+```
+# save plot
+```{r}
+plots=ggarrange(flash_activity, rain_activity,
+          temperature_activity, nrow=3, ncol=1,
+          labels=c("A","B","C"))
+plots
+# save high resolution TIFF file
+ggplot2::ggsave(plots,file = "flash_weather_activity_corrected.tiff",
+                device='tiff', dpi=800,  width = 210, 
+                height = 297,  units = "mm")
+```
+# Modelling video-based bat activity
+```{r}
+#rescale continuous variables
+merged$precProp_stand=scale(merged$precProp, center = F)
+merged$sunset_temp_stand=scale(merged$sunset_temp, center = F)
+
+#calculate correlation coefficients
+merged %>% dplyr::select(Week, precProp_stand, sunset_temp_stand) %>% cor()
+
+merged$Week=as.factor(merged$Week)
+
+#final model
+model=glmer.nb(passes ~ precProp_stand + sunset_temp_stand + Flash +  
+                      (1|Site),data=merged) 
+#model output              
+summary(model)
+```
+
+```{r}
+#calculate odds ratio with confidence interval
+cc=confint(model,parm="beta_")  
+ctab=cbind(est=fixef(model),cc)
+ctab=as.data.frame(ctab)
+ctab=setNames(cbind(rownames(ctab), ctab, row.names = NULL), 
+              c("variable","est","lcl","ucl"))
+ctab$variable=c("intercept", "proportion of \n rainy night hours \n (standardized)","air temperature \n at sunset \n (standardized)", "flash on")
+ctab[,2:4] <- exp(ctab[,2:4])
+ctab
+```
+# Model validation
+```{r}
+set.seed(42)
+testUniformity(model) #tests if the overall distribution conforms to expectations
+testDispersion(model) # tests if the simulated dispersion is equal to the observed dispersion
+testQuantiles(model) #fits a quantile regression
+```
+
