@@ -1,1 +1,2 @@
-R project file, R markdown file & raw data files
+R project file, R markdown file & raw data files.
+Open the project file in R studio, this sets the "data" folder with the raw data files in it as the working directory; then open the markdown file and run the script.
