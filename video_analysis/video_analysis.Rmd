@@ -1,0 +1,124 @@
+---
+title: "video_analysis"
+author: "GabiK"
+date: "5/20/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#load required libraries
+library(ggplot2)
+library(tidyverse)
+library(ggpubr)
+library(vegan)
+#color-blindly palette (https://www.r-bloggers.com/2018/09/tol-color-schemes/)
+Tol_lightInv <- c("#CC6677","#AAAA00","#BBCC33","#44BB99","#99DDFF","#FFAABB", "#EEDD88", "#EE8866","#77AADD" )
+
+#N.B. after installing new packages, re-start R before running the script
+```
+# Create Figure 2 in the manuscript
+```{r}
+sites=c("Demmin","Anklam","Peenemuende","Friedland")
+for (site in sites) {
+  #load raw data, reformat
+  raw=read.csv(paste0("data/",site,"_behavioral_scoring.csv"), header=T)
+  raw$EventC=as.numeric(raw$EventC)
+  raw$Social=as.factor(raw$Social)
+  raw$Flash=as.factor(raw$Flash)
+  raw$Direction <- factor(raw$Direction, levels = c("up","down", "left", "right", "U-turn", "loop" ))
+  levels(raw$Social)=as.factor(c("Non-social", "Social"))
+  levels(raw$Flash)=as.factor(c("flash-off", "flash-on"))
+  
+  raw=raw %>% 
+    na.omit(raw) %>% #exclude NA rows
+    filter(Direction!="innerloop") #exclude innerloops
+  
+  a=table(raw$Social,raw$Flash)[1,1] #flash off, non social
+  b=table(raw$Social,raw$Flash)[2,1] #flash off, social
+  c=table(raw$Social,raw$Flash)[1,2] #flash on, non social
+  d=table(raw$Social,raw$Flash)[2,2] #flash on, social
+  
+  #data frame with labels for each facet
+  f_labels <- data.frame(Flash = c("flash-off", "flash-on",
+                                   "flash-off", "flash-on"), 
+                         label = c(a,c,b,d))
+  f_labels=f_labels %>% 
+    mutate(label=paste0("N=", label))
+  
+  assign(site,ggplot(raw, aes(fill=Direction, y=EventC, x=Social)) + 
+    geom_bar(position="fill", stat="identity")+
+    scale_fill_manual(values=Tol_lightInv)+
+    labs(y="relative abundance", x = " ")+
+    scale_y_continuous(label=scales::percent, limits=c(0,1.05))+
+    theme(panel.grid.minor = element_blank())+ 
+    theme_bw()+
+    facet_wrap(~Site+Flash)+
+    geom_text(x = c(1,1,2,2), y =c(1.05,1.05,1.05,1.05), aes(label = label), data = f_labels, inherit.aes = FALSE))
+}
+
+figure2=ggarrange(Anklam, Demmin, Friedland, Peenemuende,
+                  ncol = 2, nrow = 2)
+figure2
+```
+
+```{r}
+# save high resolution TIFF file
+ggplot2::ggsave(figure2,file = "direction_flash_social_figure2.tiff",
+                device='tiff', dpi=800,  width = 297, 
+                height = 210,  units = "mm")
+```
+#BETADISPER & ADONIS
+```{r}
+sites=c("Demmin","Anklam","Peenemuende","Friedland")
+for (site in sites) {
+  #Load raw direction data
+  raw=read.csv(paste0("data/",site, "_behavioral_scoring.csv"), header=T)
+  raw$EventC=as.numeric(raw$EventC)
+  raw$Social=as.factor(raw$Social)
+  raw=raw %>% 
+    na.omit(raw) %>% 
+    filter(Direction!="innerloop")
+  raw$day <- weekdays(as.Date(raw$Date, format="%d/%m/%Y"))
+  head(raw)
+  table(raw$Direction,raw$Social)
+  
+  #Calculate direction totals per 'week' 
+  #weeks were created by merging data from the same days of the week e.g. Week 1- Mondays, Week 2 - Tuesdays,..
+  pc=raw %>%
+    filter(!is.na(raw$Direction)) %>% 
+    select(day,Flash,Social,Direction) %>%
+    group_by(day,Flash,Social,Direction) %>% 
+    count(day,Direction) %>%  
+    group_by(day,Flash,Social)%>% 
+    spread(Direction,n,fill=0)
+  pc_num=as.matrix(pc[1:nrow(pc),4:ncol(pc)])
+  
+  #Bray-Curtis dissimilarity matrix
+  disFlash=vegdist(pc_num, method="bray")
+  
+  #test for homogenous group variance between Flash groups
+  modFlash = betadisper(disFlash, pc$Flash)
+  an1=anova(modFlash)
+  sink(paste0("betadisper_Flash_",site,".txt"))
+  print(an1)
+  sink() 
+  
+  #test for homogenous group variance between Social groups
+  modSocial = betadisper(disFlash, pc$Social)
+  an2=anova(modSocial)
+  sink(paste0("betadisper_Social_",site,".txt"))
+  print(an2)
+  sink() 
+  
+  #ADONIS test
+  adonis_test=adonis(pc_num ~ Social + Flash, method="bray",data=pc,
+                     permutations = 9999)
+  sink(paste0("adonis_",site,".txt"))
+  print(adonis_test)
+  sink() 
+  # N.B.: p-values were corrected the p.adjust function with 'bonferroni' method (R stats package) based on the save output tables
+}
+```
+
